@@ -224,7 +224,3 @@ Ide, laporan bug, dan pengembangan fitur dapat diajukan melalui GitHub Issues at
 
 *espOS is an experimental mini-smartphone interface project built with Arduino and ESP32-S3.*
 '''
-
-path = Path("/mnt/data/README.md")
-path.write_text(readme, encoding="utf-8")
-print(f"README.md berhasil dibuat: {path} ({path.stat().st_size} bytes)")
