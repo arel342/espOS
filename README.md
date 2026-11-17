@@ -1,7 +1,3 @@
-from pathlib import Path
-
-readme = r'''# espOS
-
 **espOS** adalah proyek sistem operasi bergaya mini smartphone yang dibuat menggunakan **ESP32-S3** dan layar sentuh TFT. Antarmukanya dirancang menyerupai ponsel modern, dengan home screen, aplikasi bawaan, control panel, lock screen, konektivitas Wi-Fi, dan beberapa mini game.
 
 > **Versi saat ini: v1.6**  
