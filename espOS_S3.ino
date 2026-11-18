@@ -80,6 +80,7 @@
 #include "driver/rtc_io.h"
 #include <math.h>
 #include "espos_types.h"
+#include "ota.h"
 #include "psram_heap.h"       // Manajer PSRAM — simpan di folder yang sama
 
 // ============================== PIN & KONFIGURASI ============================
@@ -2120,16 +2121,20 @@ static void buildButtons() {
       break;
     case SC_SETTINGS: {
       static const char* LKN[3] = {"Mati", "PIN", "Pola"};
-      addBtn(12, 66,  216, 29, 2, B_ROW, "Tema", THEMES[curTheme].name);
+      addBtn(12, 66, 216, 26, 2, B_ROW, "Tema", THEMES[curTheme].name);
       snprintf(sub, sizeof(sub), "%02d:%02d", clk_hh, clk_mm);
-      addBtn(12, 97,  216, 29, 3, B_ROW, "Atur jam & tanggal", sub);
-      addBtn(12, 128, 216, 29, 7, B_ROW, "Kunci layar", LKN[lkType > 2 ? 0 : lkType]);
-      addBtn(12, 159, 216, 29, 8, B_ROW, "Info sistem");
-      addBtn(12, 190, 216, 29, 4, B_ROW, "Kalibrasi touch");
-      addBtn(12, 221, 216, 29, 5, B_ROW, "Matikan layar");
-      addBtn(12, 252, 216, 29, 6, B_ROW, "Tentang espOS");
+      addBtn(12, 93, 216, 26, 3, B_ROW, "Atur jam & tanggal", sub);
+      addBtn(12, 120, 216, 26, 7, B_ROW, "Kunci layar", LKN[lkType > 2 ? 0 : lkType]);
+      addBtn(12, 147, 216, 26, 8, B_ROW, "Info sistem");
+      addBtn(12, 174, 216, 26, 4, B_ROW, "Kalibrasi touch");
+      addBtn(12, 201, 216, 26, 5, B_ROW, "Matikan layar");
+      addBtn(12, 228, 216, 26, 6, B_ROW, "Tentang espOS");
+      addBtn(12, 255, 216, 26, 9, B_ROW, "Update espOS");
       break;
     }
+    case SC_OTA:
+      addBtn(12, 100, 216, 48, 1, B_ROW, "Cek update", ota::labels[ota::state.load()]);
+      break;
     case SC_LOCKSET:
       addBtn(12, 70,  216, 44, 1, B_ROW, "Tanpa kunci", lkType == 0 ? "Aktif" : "Geser ke atas langsung buka");
       addBtn(12, 120, 216, 44, 2, B_ROW, "PIN", lkType == 1 ? "Aktif - 4 sampai 8 angka" : "4 sampai 8 angka");
@@ -2177,7 +2182,7 @@ static int appOfScreen(Screen s) {            // layar ini milik aplikasi nomor 
     case SC_DINO: return 6;
     case SC_PONG: return 7;
     case SC_FLAPPY: return 8;
-    case SC_SETTINGS: case SC_SYSINFO: case SC_SETTIME: case SC_ABOUT: case SC_WIFI: case SC_WIFIPASS:
+    case SC_SETTINGS: case SC_SYSINFO: case SC_SETTIME: case SC_OTA: case SC_ABOUT: case SC_WIFI: case SC_WIFIPASS:
     case SC_LOCKSET: case SC_PINPAD: case SC_PATTERN: return 5;
     default: return -1;
   }
@@ -2185,7 +2190,7 @@ static int appOfScreen(Screen s) {            // layar ini milik aplikasi nomor 
 static int screenDepth(Screen s) {            // kedalaman layar di dalam aplikasi (untuk arah geser)
   switch (s) {
     case SC_HOME: return 0;
-    case SC_NOTEEDIT: case SC_FILEVIEW: case SC_SYSINFO: case SC_SETTIME: case SC_ABOUT: case SC_LOCKSET: case SC_WIFIPASS: return 2;
+    case SC_NOTEEDIT: case SC_FILEVIEW: case SC_SYSINFO: case SC_SETTIME: case SC_OTA: case SC_ABOUT: case SC_LOCKSET: case SC_WIFIPASS: return 2;
     case SC_PINPAD: case SC_PATTERN: return 3;
     default: return 1;
   }
@@ -2416,7 +2421,7 @@ static void drawControlPanel() {
   snprintf(b, sizeof(b), "%02d:%02d", clk_hh, clk_mm);
   drawText(B13, 16, oy + 30, b, COL_WHITE);
   snprintf(b, sizeof(b), "%s, %d %s %d", HARI[clk_wd], clk_dd, BULAN[clk_mo], clk_yy);
-  drawText(F9, 16, oy + 46, b, COL_MUTED);
+  drawText(F9, 16, oy + 46, ota::state == ota::Available || ota::state == ota::Writing ? "Update espOS tersedia >" : b, COL_MUTED);
   drawStatusIcons(oy + 12);
 
   // slider kecerahan
@@ -2596,7 +2601,7 @@ static const char* titleFor(Screen s) {
   switch (s) {
     case SC_NOTES: return "Catatan"; case SC_FILES: return "Berkas";
     case SC_STOPWATCH: return "Stopwatch"; case SC_SYSINFO: return "Info sistem"; case SC_SETTINGS: return "Setelan";
-    case SC_SETTIME: return "Atur jam & tanggal"; case SC_ABOUT: return "Tentang";
+    case SC_SETTIME: return "Atur jam & tanggal"; case SC_OTA: return "Update espOS"; case SC_ABOUT: return "Tentang";
     case SC_LOCKSET: return "Kunci layar"; case SC_PINPAD: return "PIN"; case SC_PATTERN: return "Pola";
     case SC_RECENTS: return "Aplikasi terbaru"; case SC_WIFI: return "Wi-Fi"; default: return "";
   }
@@ -3213,6 +3218,7 @@ static void closePanelNow() { cpOpen = false; cpDrag = false; cpAnim = 0; cpV = 
 
 // Tidur: layar mati, Wi-Fi & LED mati, CPU light-sleep. Sentuh layar untuk bangun (kembali ke lock screen).
 static void goSleep() {
+  if (ota::busy) { setToast("Tunggu proses update"); return; }
   closePanelNow();
   flashOn = false; ledWrite(0, 0, 0);
   wifiStop();
@@ -3223,6 +3229,7 @@ static void goSleep() {
 
 // Deep sleep: hampir semua mati. Bangun dengan tombol BOOT (GPIO0) atau RESET -> espOS booting ulang.
 static void enterDeepSleep() {
+  if (ota::busy) { setToast("Tunggu proses update"); return; }
   waitPush();
   closePanelNow();
   flashOn = false; ledWrite(0, 0, 0);
@@ -3270,7 +3277,7 @@ static void goBack() {
     case SC_NOTEEDIT: leaveScreen(); goScreen(SC_NOTES); break;
     case SC_FILEVIEW: goScreen(SC_FILES); break;
     case SC_WIFIPASS: leaveScreen(); goScreen(SC_WIFI); break;
-    case SC_SYSINFO: case SC_LOCKSET: case SC_SETTIME: case SC_ABOUT: goScreen(SC_SETTINGS); break;
+    case SC_SYSINFO: case SC_LOCKSET: case SC_SETTIME: case SC_OTA: case SC_ABOUT: goScreen(SC_SETTINGS); break;
     case SC_PINPAD: case SC_PATTERN: goScreen(credPurpose == 1 ? SC_SETTINGS : SC_LOCKSET); break;
     case SC_HOME: break;
     default: goHome(); break;
@@ -3395,8 +3402,12 @@ static void act(int code) {
       if (code == 1) { if (swRunning) { swAcc += millis() - swStart; swRunning = false; } else { swStart = millis(); swRunning = true; } }
       else { swRunning = false; swAcc = 0; }
       buildButtons(); dirty = true; break;
+    case SC_OTA:
+      if (WiFi.status()!=WL_CONNECTED) setToast("Hubungkan Wi-Fi dahulu"); else ota::check();
+      break;
     case SC_SETTINGS:
-      if (code == 2) { sheetOpen = true; lastAnimMs = millis(); dirty = true; }
+      if (code == 9) goScreen(SC_OTA);
+      else if (code == 2) { sheetOpen = true; lastAnimMs = millis(); dirty = true; }
       else if (code == 3) goScreen(SC_SETTIME);
       else if (code == 4) { calibrate(); goScreen(SC_SETTINGS); }
       else if (code == 5) goSleep();
@@ -3448,6 +3459,7 @@ static void cpTap(int x, int y) {                        // panel terbuka penuh 
     cpMode = 0; return;
   }
   if (y > CP_H) { cpOpen = false; return; }              // ketuk di luar panel = tutup
+  if (!locked && y < 55 && (ota::state == ota::Available || ota::state == ota::Writing)) { closePanelNow(); leaveScreen(); goScreen(SC_OTA); return; }
   switch (cpHitTile(x, y)) {
     case 0: wifiToggle(); break;
     case 1: flashToggle(); break;
@@ -3780,13 +3792,13 @@ void setup() {
 
   if (!initAssets()) { Serial.println("Gagal memuat font/ikon"); setBacklight(255); tft.fillScreen(ILI9341_RED); while (true) delay(1000); }
   fb = allocFrame(true);
-  if (!fb) { Serial.println("Gagal alokasi framebuffer"); setBacklight(255); tft.fillScreen(ILI9341_RED); while (true) delay(1000); }
+  if (!fb) { if (ota::pending()) esp_ota_mark_app_invalid_rollback_and_reboot(); Serial.println("Gagal alokasi framebuffer"); setBacklight(255); tft.fillScreen(ILI9341_RED); while (true) delay(1000); }
   bgBuf = allocFrame(false);
   snapBuf = allocFrame(false);
   snapBuf2 = allocFrame(false);
   fbAlt = allocFrame(false);
   startPushTask();
-  fsOK = LittleFS.begin(true);
+  fsOK = LittleFS.begin(!ota::pending());
   Serial.printf("RAM internal bebas : %u KB (blok terbesar %u KB)\n",
     (unsigned)(ESP.getFreeHeap() / 1024),
     (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024));
@@ -3826,6 +3838,9 @@ void setup() {
   screen = SC_HOME; locked = true; buildButtons();
   if (wifiWant) wifiStart();                     // Wi-Fi menyambung sambil animasi boot
   bootSequence();
+  if (ota::pending()) {
+    if (!fsOK || esp_ota_mark_app_valid_cancel_rollback()!=ESP_OK) esp_ota_mark_app_invalid_rollback_and_reboot();
+  }
   if (!calOK) calibrate();                       // pertama kali: kalibrasi touch otomatis
   lastMinuteMs = millis(); lastAnimMs = millis();
   dirty = true;
@@ -3848,6 +3863,10 @@ void loop() {
   }
   if (tickClock(now)) dirty = true;
   wifiTask(now);
+  ota::tick();
+  static ota::State prev=ota::Idle;
+  auto status=ota::state.load();
+  if (prev!=status) { prev=status; if (screen==SC_OTA) buildButtons(); dirty=true; }
   wifiScanTask(now);
 
   float dt = (now - lastAnimMs) / 1000.0f;
