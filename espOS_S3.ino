@@ -13,6 +13,10 @@
      - Setelan     : Tema, Atur jam & tanggal, KUNCI LAYAR (PIN 4-8 angka / pola), Info sistem, Kalibrasi touch,
                      Matikan layar, Tentang
      - Kalibrasi touch otomatis saat pertama kali menyala (disimpan permanen)
+     - [BARU v1.7] SETUP AWAL ala HP baru: saat menyala, flash (NVS) dipindai. Bila ada data espOS -> langsung
+              ke lock screen / beranda. Bila KOSONG -> wizard: Selamat datang > Tentang espOS > Kunci layar
+              (Pola / PIN / nanti saja) > Sambungkan Wi-Fi (boleh dilewati) > Nama pengguna > Selesai.
+              Setelan > Reset pabrik menghapus semua data lalu mengulang setup (kalibrasi touch dipertahankan).
      - [BARU] Lock screen (jam & tanggal) - geser ke atas untuk membuka
      - [BARU] Control panel - geser dari atas ke bawah (juga bisa dari lock screen):
                 Kecerahan, Wi-Fi, Senter (LED RGB bawaan), Kunci, Tidur (light sleep),
@@ -1662,8 +1666,20 @@ static uint8_t  patSeq[9]; static uint8_t patLen = 0;
 static bool     patDrag = false, patErr = false;
 static uint32_t patErrT = 0;
 static float    patFx = 0, patFy = 0;
-static int  credKind() { return locked ? lkType : (screen == SC_PINPAD ? 1 : 2); }
-static bool credScreen() { return !locked && (screen == SC_PINPAD || screen == SC_PATTERN); }
+// ---- Setup awal (OOBE) ----
+#define SETUP_VERSION 1                              // naikkan bila isi setup berubah & ingin diulang
+enum : uint8_t { OB_WELCOME = 0, OB_ABOUT, OB_LOCK, OB_CRED, OB_WIFI, OB_NAME, OB_DONE };
+static bool     setupMode = false;                   // true = wizard setup sedang berjalan
+static uint8_t  setupStep = OB_WELCOME;
+static uint8_t  setupKind = 1;                       // jenis kunci yang sedang dibuat: 1 PIN, 2 pola
+static uint32_t setupT0 = 0;                         // waktu masuk langkah (untuk animasi)
+static char     userName[24] = USER_NAME;            // nama pengguna (disimpan di flash: "uname")
+static char     nameBuf[17] = "";  static int nameLen = 0;
+static uint32_t nameLastMs = 0;
+static void drawLogo(float p);                       // deklarasi maju (didefinisikan di bagian BOOT)
+
+static int  credKind() { return setupMode ? setupKind : (locked ? lkType : (screen == SC_PINPAD ? 1 : 2)); }
+static bool credScreen() { return setupMode ? (setupStep == OB_CRED) : (!locked && (screen == SC_PINPAD || screen == SC_PATTERN)); }
 static void credReset() {
   credLen = 0; credBuf[0] = 0; patLen = 0; patDrag = false; patErr = false;
   credMsg[0] = 0; credKey = -1; credTouch = false; credCancelDown = false;
@@ -2137,12 +2153,29 @@ static void buildButtons() {
       }
       break;
     }
-    case SC_RESET:
-      addBtn(12, 176, 216, 40, 1, B_KEY, "Batal");
-      addBtn(12, 226, 216, 40, 2, B_KEY2, "Hapus dan mulai ulang");
-      break;
     case SC_OTA:
       addBtn(12, 100, 216, 48, 1, B_ROW, "Cek update", ota::labels[ota::state.load()]);
+      break;
+    case SC_RESET:
+      addBtn(12, 196, 216, 36, 1, B_KEY2, "Batal");
+      addBtn(12, 240, 216, 36, 2, B_HIDDEN);           // tombol merah digambar manual
+      break;
+    case SC_OOBE:
+      switch (setupStep) {
+        case OB_WELCOME: addBtn(24, 246, 192, 36, 1, B_EQ, "Mulai"); break;
+        case OB_ABOUT:   addBtn(24, 254, 192, 30, 1, B_EQ, "Lanjut"); break;
+        case OB_LOCK:
+          addBtn(12, 92,  216, 46, 2, B_ROW, "Pola",       lkType == 2 ? "Aktif" : "Gambar pola di 9 titik");
+          addBtn(12, 146, 216, 46, 1, B_ROW, "PIN",        lkType == 1 ? "Aktif" : "4 sampai 8 angka");
+          addBtn(12, 200, 216, 46, 3, B_ROW, "Nanti saja", lkType == 0 ? "Aktif" : "Geser langsung membuka");
+          break;
+        case OB_NAME:
+          addBtn(12, 114, 216, 26, 201, B_HIDDEN);       // tombol Lanjut (digambar manual)
+          buildPhoneKeyboard();
+          break;
+        case OB_DONE:    addBtn(24, 250, 192, 34, 1, B_EQ, "Mulai gunakan espOS"); break;
+        default: break;
+      }
       break;
     case SC_LOCKSET:
       addBtn(12, 70,  216, 44, 1, B_ROW, "Tanpa kunci", lkType == 0 ? "Aktif" : "Geser ke atas langsung buka");
@@ -2292,7 +2325,7 @@ static void drawStatusBar() {
 
 static void drawHomeTop() {
   char buf[40];
-  snprintf(buf, sizeof(buf), "Halo, %s.", USER_NAME);
+  snprintf(buf, sizeof(buf), "Halo, %s.", userName);
   drawText(F10, 16, 43, buf, COL_MUTED);
   snprintf(buf, sizeof(buf), "%02d:%02d", clk_hh, clk_mm);
   drawText(CLK, 13, 92, buf, COL_WHITE);
@@ -2610,9 +2643,9 @@ static const char* titleFor(Screen s) {
   switch (s) {
     case SC_NOTES: return "Catatan"; case SC_FILES: return "Berkas";
     case SC_STOPWATCH: return "Stopwatch"; case SC_SYSINFO: return "Info sistem"; case SC_SETTINGS: return "Setelan";
-    case SC_SETTIME: return "Atur jam & tanggal"; case SC_RESET: return "Reset pabrik"; case SC_OTA: return "Update espOS"; case SC_ABOUT: return "Tentang";
+    case SC_SETTIME: return "Atur jam & tanggal"; case SC_OTA: return "Update espOS"; case SC_ABOUT: return "Tentang";
     case SC_LOCKSET: return "Kunci layar"; case SC_PINPAD: return "PIN"; case SC_PATTERN: return "Pola";
-    case SC_RECENTS: return "Aplikasi terbaru"; case SC_WIFI: return "Wi-Fi"; default: return "";
+    case SC_RECENTS: return "Aplikasi terbaru"; case SC_WIFI: return "Wi-Fi"; case SC_RESET: return "Reset pabrik"; default: return "";
   }
 }
 
@@ -2855,11 +2888,6 @@ static void drawExtras() {
     case SC_SETTINGS:
       drawText(F8, 120, 281, settingsMore ? "2/2 - Geser ke bawah" : "1/2 - Geser ke atas", COL_MUTED, 255, 1);
       break;
-    case SC_RESET:
-      drawText(F9, 16, 106, "Hapus catatan, berkas, Wi-Fi,", COL_TEXT);
-      drawText(F9, 16, 128, "dan semua setelan perangkat?", COL_TEXT);
-      if (wfToast[0] && millis() < wfToastUntil) drawText(F8, 16, 154, wfToast, t.accent);
-      break;
     case SC_ABOUT: {
       int tw = textWidth(B29, "espOS"), x = 120 - tw / 2;
       int w1 = drawText(B29, x, 120, "esp", COL_WHITE);
@@ -2878,6 +2906,22 @@ static void drawExtras() {
       break;
     }
     case SC_PINPAD: case SC_PATTERN: drawCredUI(255, 0); break;
+    case SC_RESET: {
+      rrect(12, 74, 216, 112, 14, H(0xFF5A4A), 22);
+      rrect(12.5f, 74.5f, 215, 111, 13.5f, H(0xFF7A6A), 90, 1.0f);
+      drawText(B13, 120, 98, "Hapus semua data?", H(0xFFB4AA), 255, 1);
+      drawText(F9, 120, 120, "Nama, kunci layar, Wi-Fi tersimpan,", COL_LABEL, 255, 1);
+      drawText(F9, 120, 134, "catatan & berkas akan dihapus.", COL_LABEL, 255, 1);
+      drawText(F9, 120, 154, "espOS restart lalu membuka setup awal.", COL_LABEL, 255, 1);
+      drawText(F8, 120, 174, "Kalibrasi touch tetap disimpan.", COL_MUTED, 255, 1);
+      if (wfToast[0] && millis() < wfToastUntil) drawText(F8, 120, 234, wfToast, COL_LABEL, 255, 1);
+      float pv = clamp01(bpX[1]);                        // tombol merah = indeks 1
+      u16 f = mix(H(0xFFFFFF), H(0xE5483A), (uint8_t)(50.0f * pv));
+      rrect(12, 240, 216, 36, 11, f);
+      drawRipple(1, 12, 240, 216, 36, 11);
+      drawText(B13, 120, 263, "Reset & mulai ulang", COL_WHITE, 255, 1);
+      break;
+    }
     case SC_WIFI:     drawWifiScreen(); break;
     case SC_WIFIPASS: drawPassScreen();  break;
     case SC_RECENTS:
@@ -2887,7 +2931,140 @@ static void drawExtras() {
   }
 }
 
+// ============================== TAMPILAN SETUP AWAL ==========================
+static int setupIdx() {                                   // posisi langkah untuk indikator titik (-1 = tanpa)
+  switch (setupStep) {
+    case OB_ABOUT: return 0; case OB_LOCK: case OB_CRED: return 1;
+    case OB_WIFI: return 2;  case OB_NAME: return 3;      case OB_DONE: return 4;
+    default: return -1;
+  }
+}
+static bool nameValid() { for (int i = 0; i < nameLen; i++) if (nameBuf[i] != ' ') return true; return false; }
+
+static void drawSetupDots() {
+  const Theme& t = THEMES[curTheme];
+  int si = setupIdx(); if (si < 0) return;
+  for (int i = 0; i < 5; i++) {
+    float cx = 120.0f + (i - 2) * 18.0f;
+    if (i == si)      rrect(cx - 8, 19, 16, 5, 2.5f, t.accent);
+    else if (i < si)  disc(cx, 21.5f, 2.5f, t.accent, 120);
+    else              disc(cx, 21.5f, 2.5f, COL_MUTED2, 130);
+  }
+}
+static void drawSetupStrip() {                            // bawah: Kembali (kiri) + Lewati / Lanjut (kanan)
+  const Theme& t = THEMES[curTheme];
+  if (setupStep == OB_WELCOME) return;
+  drawIcon(IC_CHEV_L, 20, 304, COL_LABEL);
+  drawText(F10, 30, 308, "Kembali", COL_LABEL);
+  const char* r = nullptr; u16 c = COL_LABEL;
+  if (setupStep == OB_LOCK && lkType != 0) { r = "Lanjut"; c = t.accent; }
+  else if (setupStep == OB_WIFI && screen == SC_WIFI) { if (wifiSt == WF_ON) { r = "Lanjut"; c = t.accent; } else r = "Lewati"; }
+  if (r) { drawText(F10, 212, 308, r, c, 255, 2); drawIcon(IC_CHEV_R, 222, 304, c); }
+}
+
+static void drawSetupBody() {
+  const Theme& t = THEMES[curTheme];
+  uint32_t now = millis();
+  char b[48];
+  switch (setupStep) {
+    case OB_WELCOME: {
+      float ta = smooth((float)(now - setupT0) / 700.0f);
+      glow(120, 118, 125, H(0x0B343C), 60);
+      drawLogo(1.0f);
+      drawText(B13, 120, 74, "Selamat datang di", COL_LABEL, (uint8_t)(255 * ta), 1);
+      int tw = textWidth(B29, "espOS"), x = 120 - tw / 2;
+      int w1 = drawText(B29, x, 190, "esp", COL_WHITE);
+      drawText(B29, x + w1, 190, "OS", t.accent);
+      drawText(F9, 120, 214, "Mini HP untuk ESP32-S3", COL_MUTED, 255, 1);
+      drawText(F8, 120, 232, "Ayo siapkan perangkatmu", COL_MUTED2, 255, 1);
+      break;
+    }
+    case OB_ABOUT: {
+      drawText(B13, 16, 56, "Tentang espOS", COL_TEXT);
+      rrect(12, 68, 216, 164, 14, H(0xFFFFFF), 14);
+      rrect(12.5f, 68.5f, 215, 163, 13.5f, H(0xFFFFFF), 24, 1.0f);
+      int w1 = drawText(B29, 24, 100, "esp", COL_WHITE);
+      drawText(B29, 24 + w1, 100, "OS", t.accent);
+      drawText(F9, 216, 96, "v1.7", COL_MUTED, 255, 2);
+      const char* st[4]; int ln[4];
+      int n = wrapLines(F9, 192, "Sistem operasi mini ala HP untuk ESP32-S3 dengan layar TFT 2.8 inci.", st, ln, 4);
+      drawLines(F9, 24, 120, 13, st, ln, 0, n, COL_LABEL);
+      static const char* FT[5] = {"Beranda, aplikasi & kontrol panel", "Catatan & berkas di memori flash",
+                                  "Kunci layar PIN atau pola", "Wi-Fi + jam otomatis (NTP)", "Kalkulator, stopwatch & 3 game"};
+      for (int i = 0; i < 5; i++) { disc(29, 160 + i * 15, 2.2f, t.accent); drawText(F9, 38, 164 + i * 15, FT[i], COL_TEXT); }
+      drawText(F8, 120, 245, "Versi 1.7 - Dibuat oleh Farel", COL_MUTED, 255, 1);
+      break;
+    }
+    case OB_LOCK: {
+      drawText(B13, 16, 56, "Kunci layar", COL_TEXT);
+      drawText(F9, 16, 74, "Amankan espOS dengan pola atau PIN.", COL_MUTED);
+      int ay = lkType == 2 ? 92 : (lkType == 1 ? 146 : (lkType == 0 ? 200 : -100));
+      if (ay > 0) drawIcon(IC_CHECK, 196, ay + 23, t.accent);
+      drawText(F8, 120, 268, "Bisa diubah nanti di Setelan > Kunci layar", COL_MUTED, 255, 1);
+      break;
+    }
+    case OB_NAME: {
+      drawText(B13, 16, 56, "Siapa namamu?", COL_TEXT);
+      drawText(F8, 16, 70, "Nama ini tampil di beranda espOS", COL_MUTED);
+      rrect(12, 78, 216, 30, 12, H(0xFFFFFF), 14);
+      rrect(12.5f, 78.5f, 215, 29, 11.5f, t.accent, 170, 1.2f);
+      float cx = 22;
+      if (nameLen == 0) drawText(F10, 22, 98, "Nama kamu", COL_MUTED2);
+      else { drawText(F10, 22, 98, nameBuf, COL_TEXT); cx = 22 + textWidth(F10, nameBuf) + 1; }
+      if (((now / 500) & 1) == 0) rrect(cx, 83, 1.6f, 20, 0.8f, t.accent);
+      bool ok = nameValid();
+      float pv = clamp01(bpX[0]);
+      u16 f = ok ? t.accent : H(0x303946);
+      if (pv > 0.01f) f = mix(H(0xFFFFFF), f, (uint8_t)(55.0f * pv));
+      rrect(12, 114, 216, 26, 13, f);
+      drawRipple(0, 12, 114, 216, 26, 13);
+      drawText(B13, 120, 132, "Lanjut", ok ? H(0x07201C) : COL_MUTED, 255, 1);
+      break;
+    }
+    case OB_DONE: {
+      float e = easeOut(clamp01((float)(now - setupT0) / 420.0f));
+      glow(120, 84, 70, t.glowA, (uint8_t)(40.0f * e));
+      disc(120, 84, 30.0f * e, t.accent, 38);
+      ringS(120, 84, 30.0f * e, 2.0f, t.accent);
+      if (e > 0.55f) { thickLine(108, 84, 116, 92, 1.8f, t.accent); thickLine(116, 92, 133, 74, 1.8f, t.accent); }
+      drawText(B13, 120, 140, "Semua siap!", COL_WHITE, 255, 1);
+      snprintf(b, sizeof(b), "Halo, %s.", userName);
+      char fit[44]; fitText(F10, b, 208, fit, sizeof(fit));
+      drawText(F10, 120, 160, fit, COL_LABEL, 255, 1);
+      rrect(12, 176, 216, 66, 14, H(0xFFFFFF), 14);
+      rrect(12.5f, 176.5f, 215, 65, 13.5f, H(0xFFFFFF), 24, 1.0f);
+      drawText(F9, 24, 197, "Kunci layar", COL_MUTED);
+      drawText(F9, 216, 197, lkType == 1 ? "PIN" : (lkType == 2 ? "Pola" : "Tidak ada"), COL_TEXT, 255, 2);
+      drawText(F9, 24, 215, "Wi-Fi", COL_MUTED);
+      if (wifiSt == WF_ON && wifiSsid[0]) { fitText(F9, wifiSsid, 130, b, sizeof(b)); drawText(F9, 216, 215, b, COL_TEXT, 255, 2); }
+      else drawText(F9, 216, 215, "Belum tersambung", COL_TEXT, 255, 2);
+      drawText(F9, 24, 233, "Tema", COL_MUTED);
+      drawText(F9, 216, 233, THEMES[curTheme].name, COL_TEXT, 255, 2);
+      break;
+    }
+    default: break;
+  }
+}
+
+static void drawSetup() {
+  copyBG();
+  drawSetupDots();
+  if (screen == SC_WIFIPASS || (screen == SC_OOBE && setupStep == OB_NAME)) rrect(0, 142, SCR_W, SCR_H - 142, 0, H(0x0A0F16), 235);   // alas keyboard
+  if (screen == SC_WIFI) drawText(B13, 16, 56, "Sambungkan Wi-Fi", COL_TEXT);
+  for (int i = 0; i < nbtn; i++) drawBtn(btns[i], i == pressedId, bpX[i], i);
+  switch (screen) {
+    case SC_OOBE:             drawSetupBody(); break;
+    case SC_PINPAD: case SC_PATTERN: drawCredUI(255, 0); break;
+    case SC_WIFI:             drawWifiScreen(); break;
+    case SC_WIFIPASS:         drawPassScreen(); break;
+    default: break;
+  }
+  drawKeyPopup();
+  drawSetupStrip();
+}
+
 static void drawScene() {
+  if (setupMode) { drawSetup(); return; }
   if (locked) { drawLock(); drawControlPanel(); return; }
   copyBG();
   drawStatusBar();
@@ -3398,8 +3575,153 @@ static void closeAllApps() {
   Serial.printf("Semua aplikasi ditutup. RAM bebas: %u KB\n", (unsigned)(ESP.getFreeHeap() / 1024));
 }
 
+// ============================== SETUP AWAL: LOGIKA ===========================
+static void act(int code);   // deklarasi maju (dipakai setupTap)
+// Pindai flash: apakah espOS pernah di-setup? (NVS namespace "espos")
+static bool osDataExists() {
+  if (prefs.isKey("setup")) return prefs.getUChar("setup", 0) != 0;                 // penanda setup selesai
+  static const char* LEGACY[] = {"tema", "bri", "lkT"};             // perangkat versi lama: sudah ada pengaturan -> jangan paksa setup
+  for (size_t i = 0; i < sizeof(LEGACY) / sizeof(LEGACY[0]); i++)
+    if (prefs.getUChar(LEGACY[i], 0xFF) != 0xFF) return true;
+  return prefs.getUChar("cok", 0) != 0; // migrasi build 1601: setup hanya kalibrasi
+}
+
+static void setupGo(uint8_t step, bool fwd) {
+  uint8_t kind = TR_NONE;
+  trActive = false; rip.on = false;
+  if (trReady() && !sleeping) { u16* keep = fb; fb = snapBuf; drawScene(); fb = keep; kind = fwd ? TR_SLIDE_FWD : TR_SLIDE_BACK; }   // cuplikan layar LAMA
+  if (setupStep == OB_WIFI && step != OB_WIFI) { wifiScanAbort(); pwWipe(); }
+  setupStep = step; setupT0 = millis();
+  switch (step) {
+    case OB_CRED: screen = (setupKind == 1) ? SC_PINPAD : SC_PATTERN; credPurpose = 2; credTmp[0] = 0; credFails = 0; credReset(); break;
+    case OB_WIFI: screen = SC_WIFI; wfPage = 0; wfScanRunning = false; wfScanT0 = millis() - WIFI_SCAN_MS; break;
+    case OB_NAME: screen = SC_OOBE; kbL = (nameLen == 0) ? 1 : 0; shiftTapMs = 0; break;       // huruf pertama otomatis kapital
+    default:      screen = SC_OOBE; break;
+  }
+  buildButtons(); dirty = true;
+  if (kind != TR_NONE) { u16* keep = fb; fb = snapBuf2; drawScene(); fb = keep; trBegin(kind, 260); }  // cuplikan layar BARU
+}
+static void setupNext() {
+  switch (setupStep) {
+    case OB_WELCOME: setupGo(OB_ABOUT, true); break;
+    case OB_ABOUT:   setupGo(OB_LOCK, true); break;
+    case OB_LOCK: case OB_CRED: setupGo(OB_WIFI, true); break;
+    case OB_WIFI:    setupGo(OB_NAME, true); break;
+    case OB_NAME: {
+      int a = 0, e = nameLen; while (a < e && nameBuf[a] == ' ') a++; while (e > a && nameBuf[e - 1] == ' ') e--;
+      int n = e - a; if (n > (int)sizeof(userName) - 1) n = sizeof(userName) - 1;
+      memcpy(userName, nameBuf + a, n); userName[n] = 0;
+      setupGo(OB_DONE, true); break;
+    }
+    default: break;
+  }
+}
+static void setupBack() {
+  switch (setupStep) {
+    case OB_ABOUT: setupGo(OB_WELCOME, false); break;
+    case OB_LOCK:  setupGo(OB_ABOUT, false); break;
+    case OB_CRED:  setupGo(OB_LOCK, false); break;
+    case OB_WIFI:
+      if (screen == SC_WIFIPASS) { pwWipe(); goScreen(SC_WIFI); }
+      else setupGo(OB_LOCK, false);
+      break;
+    case OB_NAME:  setupGo(OB_WIFI, false); break;
+    case OB_DONE:  setupGo(OB_NAME, false); break;
+    default: break;
+  }
+}
+static void setupFinish() {                                // simpan semuanya ke flash, lalu masuk beranda
+  prefs.putString("uname", userName);
+  prefs.putUChar("lkT", lkType); prefs.putUInt("lkH", lkHash);
+  prefs.putUChar("wifi", wifiWant ? 1 : 0);
+  prefs.putUChar("tema", (uint8_t)curTheme); prefs.putUChar("bri", (uint8_t)brightPct);
+  prefs.putUChar("setup", SETUP_VERSION);                   // paling akhir: penanda "setup selesai"
+  uint8_t kind = TR_NONE;
+  trActive = false; rip.on = false;
+  if (trReady()) { u16* keep = fb; fb = snapBuf; drawScene(); fb = keep; kind = TR_FADE; }
+  setupMode = false; credPurpose = 0; credReset(); lockAuth = false;
+  locked = false; lockShift = 0; screen = SC_HOME;
+  homePage = 0; homePos = 0; homeV = 0; homeSpring = false;
+  buildButtons(); dirty = true; lastAnimMs = millis();
+  if (kind != TR_NONE) { u16* keep = fb; fb = snapBuf2; drawScene(); fb = keep; trBegin(kind, 420); }
+  Serial.printf("Setup selesai. Pengguna: %s, kunci: %u\n", userName, (unsigned)lkType);
+}
+static void nameKey(int code) {
+  switch (code) {
+    case -1:                                                // Shift (ketuk 2x = Caps Lock) / halaman simbol
+      if (kbL >= 3) kbL = (kbL == 3) ? 4 : 3;
+      else if (kbL == 0) { kbL = 1; shiftTapMs = millis(); }
+      else if (kbL == 1 && millis() - shiftTapMs < 400UL) kbL = 2;
+      else kbL = 0;
+      buildButtons(); return;
+    case -2:
+      if (nameLen > 0) { nameBuf[--nameLen] = 0; nameLastMs = 0; if (nameLen == 0 && kbL == 0) { kbL = 1; buildButtons(); } }
+      return;
+    case -3: kbL = (kbL >= 3) ? 0 : 3; buildButtons(); return;
+    case -4: case 201: if (nameValid()) setupNext(); return;
+    default: break;
+  }
+  if (code > 31 && code < 127 && nameLen < 16) {
+    if (code == ' ' && (nameLen == 0 || nameBuf[nameLen - 1] == ' ')) return;     // tanpa spasi di awal / ganda
+    nameBuf[nameLen++] = (char)code; nameBuf[nameLen] = 0; nameLastMs = millis();
+    if (kbL == 1) { kbL = 0; buildButtons(); }                                    // Shift sekali pakai
+    if (code == ' ' && kbL == 0) { kbL = 1; buildButtons(); }                     // huruf setelah spasi otomatis kapital
+  }
+}
+static void setupAct(int code) {
+  switch (setupStep) {
+    case OB_WELCOME: case OB_ABOUT: if (code == 1) setupNext(); break;
+    case OB_DONE:    if (code == 1) setupFinish(); break;
+    case OB_LOCK:
+      if (code == 3) { lkType = 0; lkHash = 0; setupNext(); }                       // nanti saja
+      else { setupKind = (code == 2) ? 2 : 1; setupGo(OB_CRED, true); }
+      break;
+    case OB_NAME:    nameKey(code); dirty = true; break;
+    default: break;
+  }
+}
+static void setupTap(int x, int y) {
+  if (y >= NAV_Y) {                                         // strip bawah: Kembali / Lewati / Lanjut
+    if (setupStep == OB_WELCOME) return;
+    if (x < 110) { setupBack(); return; }
+    if (x >= 130) {
+      if (setupStep == OB_LOCK && lkType != 0) setupNext();
+      else if (setupStep == OB_WIFI && screen == SC_WIFI) setupNext();
+    }
+    return;
+  }
+  int id = hitBtn(x, y);
+  if (id >= 0) act(btns[id].code);
+}
+
+// Reset pabrik: hapus data espOS (NVS + berkas LittleFS + Wi-Fi), pertahankan kalibrasi touch, restart -> setup awal
+static void factoryReset() {
+  if (ota::busy) { setToast("Tunggu proses update"); return; }
+  bool cok = prefs.getUChar("cok", 0) != 0;
+  int c0 = prefs.getInt("cx0", calX0), c1 = prefs.getInt("cx1", calX1), d0 = prefs.getInt("cy0", calY0), d1 = prefs.getInt("cy1", calY1);
+  uint8_t sw = prefs.getUChar("csw", 0);
+  LittleFS.end();
+  if (!LittleFS.format()) { fsOK = LittleFS.begin(false); setToast("Gagal menghapus berkas"); return; }
+  fsOK = LittleFS.begin(false);
+  if (!prefs.clear()) { setToast("Gagal menghapus setelan"); return; }
+  prefs.putUChar("setup", 0);  // reset eksplisit: kalibrasi bukan tanda wizard selesai
+  if (cok) { prefs.putInt("cx0", c0); prefs.putInt("cx1", c1); prefs.putInt("cy0", d0); prefs.putInt("cy1", d1); prefs.putUChar("csw", sw); prefs.putUChar("cok", 1); }
+  WiFi.mode(WIFI_STA); WiFi.disconnect(true, true);         // hapus juga jaringan yang diingat driver Wi-Fi
+  if (flashOn) { flashOn = false; ledWrite(0, 0, 0); }
+  fillSolid(BOOT_BG);
+  drawText(B13, 120, 156, "Mereset espOS...", COL_TEXT, 255, 1);
+  drawText(F9, 120, 178, "Perangkat akan restart", COL_MUTED, 255, 1);
+  pushFrame(); delay(900);
+  ESP.restart();
+}
+
 static void act(int code) {
   switch (screen) {
+    case SC_OOBE: setupAct(code); break;
+    case SC_RESET:
+      if (code == 1) goScreen(SC_SETTINGS);
+      else if (code == 2) factoryReset();
+      break;
     case SC_HOME: openApp(code); break;
     case SC_CALC: calcPress(code); dirty = true; break;
     case SC_NOTES: noteSlot = code - 1; loadNote(noteSlot); kbLayer = 0; goScreen(SC_NOTEEDIT); break;
@@ -3421,18 +3743,6 @@ static void act(int code) {
       buildButtons(); dirty = true; break;
     case SC_OTA:
       if (WiFi.status()!=WL_CONNECTED) setToast("Hubungkan Wi-Fi dahulu"); else ota::check();
-      break;
-    case SC_RESET:
-      if (code == 1) { goScreen(SC_SETTINGS); break; }
-      if (code != 2) break;
-      if (ota::busy) { setToast("Tunggu proses update"); break; }
-      // Only erase user data. Never clear OTA partitions or the rollback ledger.
-      LittleFS.end();
-      if (!LittleFS.format()) { fsOK = LittleFS.begin(false); setToast("Gagal menghapus berkas"); break; }
-      fsOK = LittleFS.begin(false);
-      if (!prefs.clear()) { setToast("Gagal menghapus setelan"); break; }
-      WiFi.disconnect(true, true);
-      ESP.restart();
       break;
     case SC_SETTINGS:
       if (code == 10) goScreen(SC_RESET);
@@ -3504,6 +3814,7 @@ static void cpTap(int x, int y) {                        // panel terbuka penuh 
 static void onTap(int x, int y) {
   if (cpOpen) { if (cpAnim > 0.95f) cpTap(x, y); return; }
   if (locked) return;
+  if (setupMode) { setupTap(x, y); return; }
   if (y >= NAV_Y) { navAction(x < 90 ? 0 : (x < 150 ? 1 : 2)); return; }
   if (sheetOpen) {
     if (y < SHEET_TOP_OPEN - 4) { closeSheet(); return; }
@@ -3553,6 +3864,11 @@ static void credSubmit(const char* s) {
   }
   if (!strcmp(credTmp, s)) {                           // konfirmasi cocok -> simpan
     lkType = (uint8_t)kind; lkHash = credHash((uint8_t)kind, s);
+    if (setupMode) {                                   // di setup: simpan nanti saat selesai, lanjut ke langkah berikutnya
+      credTmp[0] = 0; credFails = 0; credPurpose = 0; credReset();
+      setupNext();
+      return;
+    }
     prefs.putUChar("lkT", lkType); prefs.putUInt("lkH", lkHash);
     credTmp[0] = 0; credFails = 0;
     setToast(kind == 1 ? "PIN disimpan" : "Pola disimpan");
@@ -3637,10 +3953,10 @@ static void pollTouch() {
           else cpPress = cpHitTile(sx, sy);
         }
       } else if (!sheetOpen) {
-        swipeTop = (sy < 34);                       // mulai dari tepi atas = tarik control panel
+        swipeTop = (sy < 34) && !setupMode;         // mulai dari tepi atas = tarik control panel (tidak aktif saat setup)
         if (locked) { if (lockAuth) { lockDrag = false; if (!swipeTop) credDown(sx, sy); } else lockDrag = !swipeTop; }   // lock screen: geser ke atas / PIN / pola
         else {
-          if (sy >= NAV_Y) pressedNav = sx < 90 ? 0 : (sx < 150 ? 1 : 2); else pressedId = (screen == SC_HOME && !homeSettled()) ? -1 : hitBtn(sx, sy);
+          if (sy >= NAV_Y && !setupMode) pressedNav = sx < 90 ? 0 : (sx < 150 ? 1 : 2); else pressedId = (screen == SC_HOME && !homeSettled()) ? -1 : hitBtn(sx, sy);
           if (credScreen() && !swipeTop && sy < NAV_Y) credDown(sx, sy);
           if (pressedId >= 0 && btns[pressedId].style != B_APP) { rip.on = true; rip.bi = pressedId; rip.x = (float)sx; rip.y = (float)sy; rip.t0 = millis(); }
         }
@@ -3688,9 +4004,13 @@ static void pollTouch() {
         }
       }
       // tahan tombol hapus di keyboard password = hapus berulang
-      if (screen == SC_WIFIPASS && !cpOpen && !locked && pressedId >= 0 && pressedId < nbtn && btns[pressedId].code == -2) {
+      if ((screen == SC_WIFIPASS || (setupMode && screen == SC_OOBE && setupStep == OB_NAME)) && !cpOpen && !locked && pressedId >= 0 && pressedId < nbtn && btns[pressedId].code == -2) {
         uint32_t nowMs = millis();
-        if (nowMs - tT0 >= 450UL && nowMs >= bsNext) { bsNext = nowMs + 60UL; ignoreTouch = true; if (!pwBusy()) pwBackspace(); dirty = true; }
+        if (nowMs - tT0 >= 450UL && nowMs >= bsNext) {
+          bsNext = nowMs + 60UL; ignoreTouch = true;
+          if (screen == SC_WIFIPASS) { if (!pwBusy()) pwBackspace(); } else nameKey(-2);
+          dirty = true;
+        }
       }
     }
   } else {
@@ -3854,6 +4174,9 @@ void setup() {
   gamesLoad();                                           // skor terbaik game
   curTheme = prefs.getUChar("tema", 0); if (curTheme > 2) curTheme = 0;
   brightPct = prefs.getUChar("bri", 100); if (brightPct < 10 || brightPct > 100) brightPct = 100;
+  bool installed = osDataExists();                        // PINDAI FLASH: ada data espOS?
+  Serial.printf("Scan flash: data espOS %s\n", installed ? "DITEMUKAN -> lewati setup" : "KOSONG -> setup awal (selamat datang)");
+  if (installed) { String un = prefs.getString("uname", USER_NAME); strncpy(userName, un.c_str(), sizeof(userName) - 1); userName[sizeof(userName) - 1] = 0; }
   lkType = prefs.getUChar("lkT", 0); lkHash = prefs.getUInt("lkH", 0); if (lkType > 2) lkType = 0;
   blLevel = 25 + (230 * brightPct) / 100;
   wifiWant = prefs.getUChar("wifi", 1) != 0;
@@ -3868,23 +4191,15 @@ void setup() {
     calSwap = prefs.getUChar("csw", 0); calOK = true;
   }
 
-  screen = SC_HOME; locked = true; buildButtons();
-  if (wifiWant) wifiStart();                     // Wi-Fi menyambung sambil animasi boot
+  if (!installed) { prefs.putUChar("setup", 0); setupMode = true; setupStep = OB_WELCOME; setupT0 = millis(); screen = SC_OOBE; locked = false; lkType = 0; lkHash = 0; }
+  else            { screen = SC_HOME; locked = true; }
+  buildButtons();
+  if (wifiWant) wifiStart();                     // Wi-Fi menyambung sambil animasi boot (di setup: siap memindai jaringan)
   bootSequence();
   if (ota::pending()) {
     if (!fsOK || esp_ota_mark_app_valid_cancel_rollback()!=ESP_OK) esp_ota_mark_app_invalid_rollback_and_reboot();
   }
-  // Existing devices already have the calibration-complete marker in NVS.
-  // Raw touch works here even before the screen axes have been calibrated.
-  while (!calOK) {
-    fillSolid(BOOT_BG);
-    drawText(B13, 120, 112, "Selamat datang di espOS", COL_WHITE, 255, 1);
-    drawText(F9, 120, 150, "Siapkan layar sentuh Anda.", COL_LABEL, 255, 1);
-    drawText(F9, 120, 202, "Sentuh layar untuk mulai", THEMES[curTheme].accent, 255, 1);
-    pushFrame();
-    int rx, ry; waitTouchRaw(rx, ry);
-    calibrate();
-  }
+  if (!calOK) { calibrate(); if (setupMode) { setupT0 = millis(); dirty = true; } }   // pertama kali: kalibrasi touch otomatis
   lastMinuteMs = millis(); lastAnimMs = millis();
   dirty = true;
 }
@@ -3906,7 +4221,7 @@ void loop() {
   }
   if (tickClock(now)) dirty = true;
   wifiTask(now);
-  ota::tick();
+  if (!setupMode) ota::tick();
   static ota::State prev=ota::Idle;
   auto status=ota::state.load();
   if (prev!=status) { prev=status; if (screen==SC_OTA) buildButtons(); dirty=true; }
@@ -3965,6 +4280,10 @@ void loop() {
   if (locked && !lockDrag && !lockSpring && !lockAuth) { static uint32_t ll = 0; if (now - ll > 50) { ll = now; dirty = true; } }   // petunjuk geser bergerak
   if (screen == SC_NOTEEDIT) { static uint32_t lb = 0; if (now - lb > 450) { lb = now; dirty = true; } }
   if (screen == SC_WIFIPASS) { static uint32_t lw = 0; if (now - lw > 250) { lw = now; dirty = true; } }   // kursor berkedip
+  if (setupMode) {                                       // animasi setup: masuk layar, kursor nama berkedip
+    if (now - setupT0 < 1000) dirty = true;
+    if (screen == SC_OOBE && setupStep == OB_NAME) { static uint32_t ln2 = 0; if (now - ln2 > 250) { ln2 = now; dirty = true; } }
+  }
   if (screen == SC_WIFI)     { static uint32_t lq = 0; if (now - lq > 500) { lq = now; dirty = true; } }   // toast / indikator pindai
   if (screen == SC_SYSINFO)  { static uint32_t ls = 0; if (now - ls > 1000) { ls = now; dirty = true; } }
 

@@ -178,9 +178,9 @@ Nama opsi pada menu Arduino IDE dapat berbeda tergantung versi ESP32 Arduino Cor
 9. Jika tidak ada error, pilih **Upload**.
 10. Buka Serial Monitor pada baud rate **115200** untuk melihat log inisialisasi.
 
-Saat flash kosong, espOS menampilkan **Selamat datang**. Sentuh layar untuk mulai, lalu sentuh empat titik kalibrasi. Boot biasa dan OTA tidak mengulang setup selama data kalibrasi tersimpan.
+Saat flash kosong, kalibrasikan layar jika diminta. Wizard asli memandu Anda dari **Selamat datang → Tentang espOS → Kunci layar → Wi-Fi → Nama → Selesai**. Kunci layar dan Wi-Fi dapat dilewati. Boot biasa dan OTA tidak mengulang setup yang sudah selesai. Pemeriksaan OTA otomatis dimulai setelah keluar dari wizard.
 
-Di **Setelan**, geser ke atas untuk halaman kedua (termasuk **Update espOS** dan **Reset pabrik**), lalu geser ke bawah untuk kembali. Reset pabrik meminta konfirmasi sebelum menghapus berkas, catatan, skor, jaringan tersimpan, kunci layar, dan kalibrasi. Firmware terpasang dan riwayat proteksi OTA tetap dipertahankan.
+Di **Setelan**, geser ke atas untuk halaman kedua (termasuk **Update espOS** dan **Reset pabrik**), lalu geser ke bawah untuk kembali. Reset pabrik meminta konfirmasi sebelum menghapus berkas, catatan, skor, jaringan tersimpan, dan kunci layar. Kalibrasi touch, firmware terpasang dan riwayat proteksi OTA tetap dipertahankan.
 
 ## Penggunaan awal
 
