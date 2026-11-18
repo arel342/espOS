@@ -2068,6 +2068,7 @@ static void buildPhoneKeyboard() {
   addBtn(192, y0 + 4 * pt, 42, kh, -4, B_EQ, "Go");
 }
 
+static bool settingsMore = false;
 static void buildButtons() {
   nbtn = 0; pressedId = -1;
   memset(bpX, 0, sizeof(bpX)); memset(bpV, 0, sizeof(bpV)); rip.on = false;
@@ -2121,17 +2122,25 @@ static void buildButtons() {
       break;
     case SC_SETTINGS: {
       static const char* LKN[3] = {"Mati", "PIN", "Pola"};
-      addBtn(12, 66, 216, 26, 2, B_ROW, "Tema", THEMES[curTheme].name);
-      snprintf(sub, sizeof(sub), "%02d:%02d", clk_hh, clk_mm);
-      addBtn(12, 93, 216, 26, 3, B_ROW, "Atur jam & tanggal", sub);
-      addBtn(12, 120, 216, 26, 7, B_ROW, "Kunci layar", LKN[lkType > 2 ? 0 : lkType]);
-      addBtn(12, 147, 216, 26, 8, B_ROW, "Info sistem");
-      addBtn(12, 174, 216, 26, 4, B_ROW, "Kalibrasi touch");
-      addBtn(12, 201, 216, 26, 5, B_ROW, "Matikan layar");
-      addBtn(12, 228, 216, 26, 6, B_ROW, "Tentang espOS");
-      addBtn(12, 255, 216, 26, 9, B_ROW, "Update espOS");
+      if (!settingsMore) {
+        addBtn(12, 66, 216, 36, 2, B_ROW, "Tema", THEMES[curTheme].name);
+        snprintf(sub, sizeof(sub), "%02d:%02d", clk_hh, clk_mm);
+        addBtn(12, 106, 216, 36, 3, B_ROW, "Atur jam & tanggal", sub);
+        addBtn(12, 146, 216, 36, 7, B_ROW, "Kunci layar", LKN[lkType > 2 ? 0 : lkType]);
+        addBtn(12, 186, 216, 36, 8, B_ROW, "Info sistem");
+        addBtn(12, 226, 216, 36, 4, B_ROW, "Kalibrasi touch");
+      } else {
+        addBtn(12, 66, 216, 36, 5, B_ROW, "Matikan layar");
+        addBtn(12, 106, 216, 36, 6, B_ROW, "Tentang espOS");
+        addBtn(12, 146, 216, 36, 9, B_ROW, "Update espOS");
+        addBtn(12, 186, 216, 36, 10, B_ROW, "Reset pabrik");
+      }
       break;
     }
+    case SC_RESET:
+      addBtn(12, 176, 216, 40, 1, B_KEY, "Batal");
+      addBtn(12, 226, 216, 40, 2, B_KEY2, "Hapus dan mulai ulang");
+      break;
     case SC_OTA:
       addBtn(12, 100, 216, 48, 1, B_ROW, "Cek update", ota::labels[ota::state.load()]);
       break;
@@ -2182,7 +2191,7 @@ static int appOfScreen(Screen s) {            // layar ini milik aplikasi nomor 
     case SC_DINO: return 6;
     case SC_PONG: return 7;
     case SC_FLAPPY: return 8;
-    case SC_SETTINGS: case SC_SYSINFO: case SC_SETTIME: case SC_OTA: case SC_ABOUT: case SC_WIFI: case SC_WIFIPASS:
+    case SC_SETTINGS: case SC_SYSINFO: case SC_SETTIME: case SC_RESET: case SC_OTA: case SC_ABOUT: case SC_WIFI: case SC_WIFIPASS:
     case SC_LOCKSET: case SC_PINPAD: case SC_PATTERN: return 5;
     default: return -1;
   }
@@ -2190,7 +2199,7 @@ static int appOfScreen(Screen s) {            // layar ini milik aplikasi nomor 
 static int screenDepth(Screen s) {            // kedalaman layar di dalam aplikasi (untuk arah geser)
   switch (s) {
     case SC_HOME: return 0;
-    case SC_NOTEEDIT: case SC_FILEVIEW: case SC_SYSINFO: case SC_SETTIME: case SC_OTA: case SC_ABOUT: case SC_LOCKSET: case SC_WIFIPASS: return 2;
+    case SC_NOTEEDIT: case SC_FILEVIEW: case SC_SYSINFO: case SC_SETTIME: case SC_RESET: case SC_OTA: case SC_ABOUT: case SC_LOCKSET: case SC_WIFIPASS: return 2;
     case SC_PINPAD: case SC_PATTERN: return 3;
     default: return 1;
   }
@@ -2601,7 +2610,7 @@ static const char* titleFor(Screen s) {
   switch (s) {
     case SC_NOTES: return "Catatan"; case SC_FILES: return "Berkas";
     case SC_STOPWATCH: return "Stopwatch"; case SC_SYSINFO: return "Info sistem"; case SC_SETTINGS: return "Setelan";
-    case SC_SETTIME: return "Atur jam & tanggal"; case SC_OTA: return "Update espOS"; case SC_ABOUT: return "Tentang";
+    case SC_SETTIME: return "Atur jam & tanggal"; case SC_RESET: return "Reset pabrik"; case SC_OTA: return "Update espOS"; case SC_ABOUT: return "Tentang";
     case SC_LOCKSET: return "Kunci layar"; case SC_PINPAD: return "PIN"; case SC_PATTERN: return "Pola";
     case SC_RECENTS: return "Aplikasi terbaru"; case SC_WIFI: return "Wi-Fi"; default: return "";
   }
@@ -2843,6 +2852,14 @@ static void drawExtras() {
       }
       break;
     }
+    case SC_SETTINGS:
+      drawText(F8, 120, 281, settingsMore ? "2/2 - Geser ke bawah" : "1/2 - Geser ke atas", COL_MUTED, 255, 1);
+      break;
+    case SC_RESET:
+      drawText(F9, 16, 106, "Hapus catatan, berkas, Wi-Fi,", COL_TEXT);
+      drawText(F9, 16, 128, "dan semua setelan perangkat?", COL_TEXT);
+      if (wfToast[0] && millis() < wfToastUntil) drawText(F8, 16, 154, wfToast, t.accent);
+      break;
     case SC_ABOUT: {
       int tw = textWidth(B29, "espOS"), x = 120 - tw / 2;
       int w1 = drawText(B29, x, 120, "esp", COL_WHITE);
@@ -3277,7 +3294,7 @@ static void goBack() {
     case SC_NOTEEDIT: leaveScreen(); goScreen(SC_NOTES); break;
     case SC_FILEVIEW: goScreen(SC_FILES); break;
     case SC_WIFIPASS: leaveScreen(); goScreen(SC_WIFI); break;
-    case SC_SYSINFO: case SC_LOCKSET: case SC_SETTIME: case SC_OTA: case SC_ABOUT: goScreen(SC_SETTINGS); break;
+    case SC_SYSINFO: case SC_LOCKSET: case SC_SETTIME: case SC_RESET: case SC_OTA: case SC_ABOUT: goScreen(SC_SETTINGS); break;
     case SC_PINPAD: case SC_PATTERN: goScreen(credPurpose == 1 ? SC_SETTINGS : SC_LOCKSET); break;
     case SC_HOME: break;
     default: goHome(); break;
@@ -3405,8 +3422,21 @@ static void act(int code) {
     case SC_OTA:
       if (WiFi.status()!=WL_CONNECTED) setToast("Hubungkan Wi-Fi dahulu"); else ota::check();
       break;
+    case SC_RESET:
+      if (code == 1) { goScreen(SC_SETTINGS); break; }
+      if (code != 2) break;
+      if (ota::busy) { setToast("Tunggu proses update"); break; }
+      // Only erase user data. Never clear OTA partitions or the rollback ledger.
+      LittleFS.end();
+      if (!LittleFS.format()) { fsOK = LittleFS.begin(false); setToast("Gagal menghapus berkas"); break; }
+      fsOK = LittleFS.begin(false);
+      if (!prefs.clear()) { setToast("Gagal menghapus setelan"); break; }
+      WiFi.disconnect(true, true);
+      ESP.restart();
+      break;
     case SC_SETTINGS:
-      if (code == 9) goScreen(SC_OTA);
+      if (code == 10) goScreen(SC_RESET);
+      else if (code == 9) goScreen(SC_OTA);
       else if (code == 2) { sheetOpen = true; lastAnimMs = millis(); dirty = true; }
       else if (code == 3) goScreen(SC_SETTIME);
       else if (code == 4) { calibrate(); goScreen(SC_SETTINGS); }
@@ -3702,6 +3732,9 @@ static void pollTouch() {
           } else if (!ignoreTouch) {
             int dx = abs(tx - t0x), dy = ty - t0y;
             if (sheetOpen && t0y >= SHEET_TOP_OPEN && dy > 36) closeSheet();
+            else if (screen == SC_SETTINGS && !locked && !cpOpen && !sheetOpen && t0y >= 60 && t0y < NAV_Y && abs(dy) > 36 && abs(dy) > dx) {
+              settingsMore = dy < 0; rip.on = false; buildButtons();
+            }
             else if (dx < 18 && abs(dy) < 18 && millis() - tT0 < 900) onTap(t0x, t0y);
           }
           lockDrag = false; if (!lockSpring) lockShift = 0; swipeTop = false;
@@ -3841,7 +3874,17 @@ void setup() {
   if (ota::pending()) {
     if (!fsOK || esp_ota_mark_app_valid_cancel_rollback()!=ESP_OK) esp_ota_mark_app_invalid_rollback_and_reboot();
   }
-  if (!calOK) calibrate();                       // pertama kali: kalibrasi touch otomatis
+  // Existing devices already have the calibration-complete marker in NVS.
+  // Raw touch works here even before the screen axes have been calibrated.
+  while (!calOK) {
+    fillSolid(BOOT_BG);
+    drawText(B13, 120, 112, "Selamat datang di espOS", COL_WHITE, 255, 1);
+    drawText(F9, 120, 150, "Siapkan layar sentuh Anda.", COL_LABEL, 255, 1);
+    drawText(F9, 120, 202, "Sentuh layar untuk mulai", THEMES[curTheme].accent, 255, 1);
+    pushFrame();
+    int rx, ry; waitTouchRaw(rx, ry);
+    calibrate();
+  }
   lastMinuteMs = millis(); lastAnimMs = millis();
   dirty = true;
 }

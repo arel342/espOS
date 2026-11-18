@@ -178,7 +178,9 @@ Nama opsi pada menu Arduino IDE dapat berbeda tergantung versi ESP32 Arduino Cor
 9. Jika tidak ada error, pilih **Upload**.
 10. Buka Serial Monitor pada baud rate **115200** untuk melihat log inisialisasi.
 
-Pada penggunaan pertama, espOS akan meminta kalibrasi touchscreen. Sentuh empat titik kalibrasi yang muncul di layar dan tunggu sampai proses selesai.
+Saat flash kosong, espOS menampilkan **Selamat datang**. Sentuh layar untuk mulai, lalu sentuh empat titik kalibrasi. Boot biasa dan OTA tidak mengulang setup selama data kalibrasi tersimpan.
+
+Di **Setelan**, geser ke atas untuk halaman kedua (termasuk **Update espOS** dan **Reset pabrik**), lalu geser ke bawah untuk kembali. Reset pabrik meminta konfirmasi sebelum menghapus berkas, catatan, skor, jaringan tersimpan, kunci layar, dan kalibrasi. Firmware terpasang dan riwayat proteksi OTA tetap dipertahankan.
 
 ## Penggunaan awal
 
