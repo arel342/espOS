@@ -55,7 +55,7 @@
 
 ## Sistem OTA v1.8.0
 
-espOS dapat memeriksa dan memasang firmware baru melalui Wi-Fi menggunakan GitHub Releases. Firmware OTA menggunakan modul terpisah agar konfigurasi, proses update, dan fungsi utilitas lebih mudah dirawat.
+espOS dapat memeriksa dan memasang firmware baru melalui Wi-Fi menggunakan GitHub Releases.
 
 ### Fitur OTA
 - Memeriksa rilis terbaru dari GitHub Releases.
@@ -77,63 +77,38 @@ espOS dapat memeriksa dan memasang firmware baru melalui Wi-Fi menggunakan GitHu
 **Catatan keamanan:** SHA-256 dari file checksum yang diunggah bersama binary membantu mendeteksi file rusak atau tidak utuh, tetapi tidak membuktikan siapa penerbit firmware. Untuk perlindungan terhadap rilis berbahaya atau akun GitHub yang diambil alih, aktifkan verifikasi tanda tangan dan simpan private key di luar repository.
 
 ### Persiapan OTA pertama kali
-OTA memerlukan konfigurasi partisi yang mendukung dua slot aplikasi, `otadata`, dan LittleFS. Karena itu:
+OTA memerlukan konfigurasi partisi yang mendukung dua slot aplikasi, `otadata`, dan LittleFS.
 
-1. Gunakan board ESP32-S3 dengan flash yang sesuai.
-2. Salin `partitions.csv` ke folder sketch.
+1. Gunakan board ESP32-S3 dengan kapasitas flash yang sesuai.
+2. Gunakan tabel partisi proyek (`partitions.csv`).
 3. Pilih Flash Size **16 MB** untuk board N16R8.
 4. Aktifkan PSRAM **OPI PSRAM** untuk ESP32-S3 N16R8.
-5. Pilih partition scheme yang menggunakan tabel partisi proyek.
-6. Flash firmware melalui USB untuk pertama kali.
+5. Flash firmware melalui USB untuk pertama kali.
 
 **Penting:** mengganti tabel partisi dapat menghapus data LittleFS yang sudah tersimpan. Backup data penting sebelum melakukan perubahan partisi atau erase flash.
 
-### Membuat rilis OTA
-1. Naikkan `ESPOS_VERSION` di `ota_config.h`, misalnya dari `1.8.0` menjadi `1.9.0`.
-2. Compile firmware dengan konfigurasi board dan partisi yang sama.
-3. Arduino IDE: **Sketch → Export Compiled Binary**.
-4. Gunakan file aplikasi `espOS_S3.ino.bin`, bukan merged image, bootloader, atau filesystem image.
-5. Jalankan script pembuat checksum:
+### Membuat rilis OTA dari Arduino IDE
+Folder `tools/` tidak diperlukan untuk proses compile dan upload biasa melalui Arduino IDE. Untuk menerbitkan firmware OTA:
 
-   ```sh
-   ./tools/make_release.sh espOS_S3.ino.bin
+1. Naikkan nilai `ESPOS_VERSION` di `ota_config.h`, misalnya dari `1.8.0` menjadi `1.9.0`.
+2. Compile firmware menggunakan konfigurasi board dan tabel partisi yang sama dengan perangkat.
+3. Pilih **Sketch → Export Compiled Binary**.
+4. Ambil file aplikasi `espOS_S3.ino.bin` dari folder sketch/build. Jangan gunakan merged image, bootloader, atau filesystem image.
+5. Buat file checksum SHA-256 dengan PowerShell Windows:
+
+   ```powershell
+   Get-FileHash .\espOS_S3.ino.bin -Algorithm SHA256 |
+     ForEach-Object { $_.Hash.ToLower() + '  espOS_S3.ino.bin' } |
+     Set-Content -Encoding ascii .\espOS_S3.ino.bin.sha256
    ```
 
 6. Buat GitHub Release dengan tag yang sama dengan versi, misalnya `v1.9.0`.
-7. Upload:
-   - `espOS_S3.ino.bin`
-   - `espOS_S3.ino.bin.sha256`
-   - `espOS_S3.ino.bin.sig` jika verifikasi tanda tangan diaktifkan.
+7. Upload `espOS_S3.ino.bin` dan `espOS_S3.ino.bin.sha256` ke release tersebut.
 
 Jangan mengganti isi rilis lama. Gunakan tag versi baru untuk setiap rilis.
 
-### Mengaktifkan tanda tangan firmware
-Secara default, `OTA_REQUIRE_SIGNATURE` bernilai `0`. Untuk mewajibkan tanda tangan:
-
-1. Jalankan `tools/gen_signing_key.sh`.
-2. Simpan `signing_private.pem` di tempat aman dan **jangan commit ke GitHub**.
-3. Salin public key ke `OTA_SIGN_PUBKEY_PEM` di `ota_config.h`.
-4. Ubah `OTA_REQUIRE_SIGNATURE` menjadi `1`.
-5. Saat membuat rilis, berikan private key ke script:
-
-   ```sh
-   ./tools/make_release.sh espOS_S3.ino.bin signing_private.pem
-   ```
-
-6. Upload file `.sig` bersama binary dan `.sha256`.
-
-Jangan pernah mengunggah private key ke repository atau GitHub Releases.
-
-### Pengujian utilitas OTA di komputer
-Sebagian fungsi utilitas OTA dapat diuji tanpa board ESP32:
-
-```sh
-cd tools
-g++ -std=c++11 -I.. test_ota_util.cpp -o test_ota_util
-./test_ota_util
-```
-
-Pengujian ini mencakup parsing versi, validasi tag dan URL, pembacaan JSON, parsing SHA-256, serta pemindaian penanda versi firmware. Lulusnya unit test tersebut **bukan** pengganti pengujian OTA pada perangkat ESP32-S3 fisik.
+### Verifikasi tanda tangan firmware
+Verifikasi tanda tangan bersifat opsional dan bukan bagian dari proses flash USB biasa. Jika `OTA_REQUIRE_SIGNATURE` diaktifkan, setiap rilis harus menyediakan file tanda tangan `.sig` yang sesuai dengan public key di firmware. Pembuatan pasangan kunci dan tanda tangan harus dilakukan menggunakan perangkat lunak kriptografi eksternal yang tepercaya. **Jangan pernah menyimpan atau mengunggah private key ke repository maupun GitHub Releases.**
 
 Dokumentasi tambahan: [`espOS_S3/README_OTA.md`](espOS_S3/README_OTA.md).
 
@@ -195,12 +170,31 @@ Pemetaan LED dapat berbeda antarvarian board. Periksa skematik board sebelum men
 
 ---
 
-## Software dan library
+## Persiapan software
 
-- Arduino IDE.
-- ESP32 Arduino Core dari Espressif.
-- Adafruit GFX Library.
-- Adafruit ILI9341.
+### 1. Install Arduino IDE
+1. Unduh Arduino IDE dari [arduino.cc/en/software](https://www.arduino.cc/en/software).
+2. Install dan jalankan Arduino IDE.
+
+### 2. Install ESP32 Arduino Core
+1. Buka **File → Preferences**.
+2. Pada kolom **Additional boards manager URLs**, tambahkan URL berikut:
+
+   ```text
+   https://espressif.github.io/arduino-esp32/package_esp32_index.json
+   ```
+
+3. Klik **OK**.
+4. Buka **Tools → Board → Boards Manager**.
+5. Cari `esp32` dari **Espressif Systems**, lalu klik **Install**.
+6. Tunggu sampai instalasi selesai.
+
+Panduan resmi: [Installing Arduino ESP32](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html).
+
+### 3. Install library
+Buka **Sketch → Include Library → Manage Libraries**, lalu cari dan install:
+- `Adafruit GFX Library`
+- `Adafruit ILI9341`
 
 Library berikut tersedia dari ESP32 Arduino Core:
 - `SPI`
@@ -211,22 +205,11 @@ Library berikut tersedia dari ESP32 Arduino Core:
 
 Touchscreen XPT2046 dibaca langsung melalui SPI oleh firmware; library touchscreen terpisah tidak diperlukan.
 
-## Konfigurasi Arduino IDE
-
-| Pengaturan | Rekomendasi |
-|---|---|
-| Board | `ESP32S3 Dev Module` |
-| Flash Size | `16MB` untuk N16R8 |
-| PSRAM | `OPI PSRAM` untuk N16R8 |
-| CPU Frequency | `240MHz` |
-| Upload Speed | `921600` (turunkan jika upload tidak stabil) |
-| Partition Scheme | Gunakan tabel partisi proyek (`partitions.csv`) |
-
-Nama opsi dapat berbeda tergantung versi ESP32 Arduino Core. Pastikan tabel partisi yang dipilih menyediakan dua slot OTA, `otadata`, dan partisi `spiffs` untuk LittleFS.
+---
 
 ## Struktur repository
 
-Struktur yang disarankan untuk GitHub:
+Struktur file firmware yang diperlukan untuk Arduino IDE:
 
 ```text
 espOS/
@@ -240,12 +223,10 @@ espOS/
     ├── ota_update.h
     ├── ota_util.h
     ├── partitions.csv
-    ├── README_OTA.md
-    └── tools/
-        ├── gen_signing_key.sh
-        ├── make_release.sh
-        └── test_ota_util.cpp
+    └── README_OTA.md
 ```
+
+Folder `tools/` dan skrip di dalamnya tidak diperlukan untuk compile maupun flash firmware melalui Arduino IDE. README ini juga tidak lagi menggunakan skrip dari folder tersebut.
 
 ### Fungsi file
 
@@ -257,30 +238,53 @@ espOS/
 | `psram_heap.h` | Helper dan manajer alokasi PSRAM |
 | `ota_config.h` | Versi firmware, sumber GitHub, jadwal OTA, dan opsi keamanan |
 | `ota_update.h` | Proses pemeriksaan, unduhan, verifikasi, pemasangan, dan rollback OTA |
-| `ota_util.h` | Fungsi utilitas OTA yang dapat diuji di komputer |
+| `ota_util.h` | Fungsi utilitas OTA |
 | `partitions.csv` | Tabel partisi ESP32-S3 untuk dua slot OTA dan LittleFS |
 | `README_OTA.md` | Dokumentasi khusus alur OTA dan penerbitan rilis |
-| `tools/gen_signing_key.sh` | Membuat pasangan kunci tanda tangan firmware |
-| `tools/make_release.sh` | Membuat checksum dan tanda tangan file firmware |
-| `tools/test_ota_util.cpp` | Unit test fungsi utilitas OTA |
 
 **Catatan Arduino IDE:** nama folder sketch harus sama dengan nama file utama, yaitu `espOS_S3`. Simpan seluruh file firmware di dalam folder tersebut.
 
-## Instalasi dan upload awal
+---
 
-1. Install Arduino IDE.
-2. Install ESP32 Arduino Core melalui Boards Manager.
-3. Install `Adafruit GFX Library` dan `Adafruit ILI9341` melalui Library Manager.
-4. Siapkan folder sketch bernama `espOS_S3`.
-5. Masukkan semua file firmware yang tercantum pada struktur proyek.
-6. Salin `partitions.csv` ke folder sketch.
-7. Hubungkan ESP32-S3 ke komputer melalui USB.
-8. Pilih board, port, Flash Size, PSRAM, dan tabel partisi yang sesuai.
-9. Compile menggunakan **Verify**.
-10. Jika berhasil, pilih **Upload**.
-11. Buka Serial Monitor pada baud rate **115200** untuk melihat log inisialisasi.
+## Instalasi dan upload awal melalui Arduino IDE
 
+### 1. Siapkan source code
+1. Unduh repository sebagai ZIP dari GitHub, lalu ekstrak.
+2. Buka folder `espOS_S3`.
+3. Pastikan file `espOS_S3.ino`, seluruh file `.h`, dan `partitions.csv` berada di folder sketch yang sama.
+4. Nama folder harus `espOS_S3`, sama dengan nama file utama `espOS_S3.ino`.
+
+### 2. Buka project
+1. Jalankan Arduino IDE.
+2. Pilih **File → Open**.
+3. Buka file `espOS_S3.ino` dari folder `espOS_S3`.
+
+### 3. Pilih board dan konfigurasi
+Hubungkan ESP32-S3 ke komputer menggunakan kabel USB yang mendukung transfer data. Kemudian atur:
+
+| Pengaturan | Rekomendasi |
+|---|---|
+| Board | `ESP32S3 Dev Module` |
+| Port | Port COM/serial ESP32-S3 yang terdeteksi |
+| Flash Size | `16MB` untuk board N16R8 |
+| PSRAM | `OPI PSRAM` untuk board N16R8 |
+| CPU Frequency | `240MHz` |
+| Upload Speed | `921600`; turunkan jika upload tidak stabil |
+| Partition Scheme | Tabel partisi proyek yang mendukung dua slot OTA dan LittleFS |
+
+Nama atau lokasi opsi dapat berbeda tergantung versi ESP32 Arduino Core. Pastikan konfigurasi partisi yang dipakai benar-benar menggunakan `partitions.csv` milik proyek. Jika versi Arduino-ESP32 yang digunakan tidak menyediakan pilihan untuk memuat tabel partisi kustom, ikuti metode pemasangan custom partition table yang sesuai dengan versi core tersebut; jangan memilih skema partisi secara asal.
+
+### 4. Compile dan flash
+1. Klik **Verify** (ikon centang) untuk memeriksa kompilasi.
+2. Jika kompilasi berhasil, klik **Upload** (ikon panah).
+3. Jika board tidak masuk mode upload otomatis, tahan tombol **BOOT**, tekan lalu lepaskan **RESET**, kemudian lepaskan **BOOT** saat proses upload dimulai.
+4. Setelah upload selesai, buka **Tools → Serial Monitor**.
+5. Atur baud rate ke **115200** untuk melihat log inisialisasi.
+
+### 5. Setup pertama
 Setelah flash kosong, perangkat menjalankan wizard setup awal. Ikuti kalibrasi touchscreen dan langkah setup yang ditampilkan. Konfigurasi kunci layar dan Wi-Fi dapat dilewati.
+
+---
 
 ## Penyimpanan data
 
