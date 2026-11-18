@@ -8,7 +8,7 @@
 #include "mbedtls/md.h"
 #include "ota_ca.h"
 
-#define ESPOS_BUILD 1601
+#define ESPOS_BUILD 1602
 // Strong override of the Arduino core hook; setup confirms after local self-test.
 extern "C" bool verifyRollbackLater() { return true; }
 #if defined(ESPOS_REQUIRE_SIGNATURE) && !CONFIG_SECURE_SIGNED_APPS
