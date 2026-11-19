@@ -55,7 +55,7 @@ struct OtaInfo {
   char     latest[16];         // "1.9.0"
   uint32_t latestV;
   char     notes[200];
-  char     err[64];
+  char     err[96];
   char     boot[64];           // pesan sekali tampil setelah boot (berhasil diperbarui / rollback)
   uint32_t nextCheck; bool sched;
 };
@@ -74,12 +74,14 @@ static void otaFail(const char* m) {
   if (!otaInfo.silent) otaInfo.state = OTA_ERROR;
   otaInfo.changed = true;
 }
+static char otaLastHost[56] = "";
+static int  otaLastTls = 0;
 static void otaHttpErr(int code, char* out, size_t cap) {
   if (code == 404) snprintf(out, cap, "Berkas rilis tidak ditemukan (404)");
   else if (code == 403 || code == 429) snprintf(out, cap, "GitHub membatasi permintaan, coba nanti");
   else if (code > 0) snprintf(out, cap, "Server membalas HTTP %d", code);
   else if (code <= -100) snprintf(out, cap, "Alamat unduhan ditolak (bukan HTTPS GitHub)");
-  else snprintf(out, cap, "Koneksi HTTPS gagal (%d). Cek jam & Wi-Fi", code);
+  else snprintf(out, cap, "HTTPS gagal %s (%d, tls 0x%X)", otaLastHost, code, (unsigned)(otaLastTls < 0 ? -otaLastTls : otaLastTls));
 }
 static void otaTrust(WiFiClientSecure& c) {
 #if OTA_PIN_ROOT_CA
@@ -99,23 +101,42 @@ static void otaTrust(WiFiClientSecure& c) {
 }
 static bool otaHaveSlot() { return esp_ota_get_next_update_partition(NULL) != NULL; }
 
+// Satu koneksi = satu klien TLS BARU (tiap lompatan redirect juga baru) supaya tidak ada sisa state / memori TLS
+struct OtaConn {
+  WiFiClientSecure* cl = nullptr;
+  HTTPClient http;
+  ~OtaConn() { http.end(); delete cl; }
+};
+
 // Buka URL (HTTPS saja). Redirect diikuti MANUAL dan tiap lompatan divalidasi (https + host GitHub).
-static int otaOpen(HTTPClient& http, WiFiClientSecure& cl, const char* url0, bool api) {
+static int otaOpen(OtaConn& c, const char* url0, bool api) {
   String url = url0;
   for (int hop = 0; hop < 5; hop++) {
     if (!otaUrlOk(url.c_str())) return -100;
-    if (!http.begin(cl, url)) return -101;
-    http.setConnectTimeout(10000);
-    http.setTimeout(15000);
-    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    http.setUserAgent("espOS-OTA/" ESPOS_VERSION);
-    if (api) { http.addHeader("Accept", "application/vnd.github+json"); http.addHeader("X-GitHub-Api-Version", "2022-11-28"); }
+    { const char* h = url.c_str() + 8; size_t n = 0;
+      while (h[n] && h[n] != '/' && h[n] != '?' && h[n] != ':' && n < sizeof(otaLastHost) - 1) n++;
+      memcpy(otaLastHost, h, n); otaLastHost[n] = 0; }
+    c.http.end(); delete c.cl;
+    c.cl = new WiFiClientSecure();
+    otaTrust(*c.cl);
+    if (!c.http.begin(*c.cl, url)) return -101;
+    c.http.setConnectTimeout(10000);
+    c.http.setTimeout(15000);
+    c.http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    c.http.setUserAgent("espOS-OTA/" ESPOS_VERSION);
+    if (api) { c.http.addHeader("Accept", "application/vnd.github+json"); c.http.addHeader("X-GitHub-Api-Version", "2022-11-28"); }
     static const char* hk[] = {"Location"};
-    http.collectHeaders(hk, 1);
-    int code = http.GET();
+    c.http.collectHeaders(hk, 1);
+    Serial.printf("[OTA] GET hop%d %s | heap internal %u, blok terbesar %u\n", hop, otaLastHost,
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    int code = c.http.GET();
+    if (code < 0) {
+      char eb[100] = ""; otaLastTls = c.cl->lastError(eb, sizeof(eb));
+      Serial.printf("[OTA] %s -> kode %d, TLS error %d (%s)\n", otaLastHost, code, otaLastTls, eb);
+    }
     if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
-      String loc = http.header("Location");
-      http.end();
+      String loc = c.http.header("Location");
+      c.http.end();
       if (!loc.length()) return -102;
       url = loc;
       continue;
@@ -126,25 +147,24 @@ static int otaOpen(HTTPClient& http, WiFiClientSecure& cl, const char* url0, boo
 }
 
 // ambil teks kecil (JSON rilis)
-static bool otaFetchText(WiFiClientSecure& cl, const char* url, bool api, String& out, int maxLen) {
-  HTTPClient http;
-  int code = otaOpen(http, cl, url, api);
-  if (code != 200) { char e[64]; otaHttpErr(code, e, sizeof(e)); http.end(); otaFail(e); return false; }
-  int sz = http.getSize();
-  if (sz > maxLen) { http.end(); otaFail("Respons GitHub terlalu besar"); return false; }
-  out = http.getString();
-  http.end();
+static bool otaFetchText(const char* url, bool api, String& out, int maxLen) {
+  OtaConn c;
+  int code = otaOpen(c, url, api);
+  if (code != 200) { char e[96]; otaHttpErr(code, e, sizeof(e)); otaFail(e); return false; }
+  int sz = c.http.getSize();
+  if (sz > maxLen) { otaFail("Respons GitHub terlalu besar"); return false; }
+  out = c.http.getString();
   if (out.length() == 0) { otaFail("Respons GitHub kosong"); return false; }
   return true;
 }
 // ambil berkas kecil biner (.sha256 / .sig) dengan batas ukuran
-static bool otaFetchBin(WiFiClientSecure& cl, const char* url, uint8_t* buf, size_t cap, size_t* outLen) {
-  HTTPClient http;
-  int code = otaOpen(http, cl, url, false);
-  if (code != 200) { char e[64]; otaHttpErr(code, e, sizeof(e)); http.end(); otaFail(e); return false; }
-  int sz = http.getSize();
-  if (sz <= 0 || (size_t)sz > cap) { http.end(); otaFail("Ukuran berkas verifikasi tidak wajar"); return false; }
-  WiFiClient* s = http.getStreamPtr();
+static bool otaFetchBin(const char* url, uint8_t* buf, size_t cap, size_t* outLen) {
+  OtaConn c;
+  int code = otaOpen(c, url, false);
+  if (code != 200) { char e[96]; otaHttpErr(code, e, sizeof(e)); otaFail(e); return false; }
+  int sz = c.http.getSize();
+  if (sz <= 0 || (size_t)sz > cap) { otaFail("Ukuran berkas verifikasi tidak wajar"); return false; }
+  WiFiClient* s = c.http.getStreamPtr();
   size_t got = 0; uint32_t t0 = millis();
   while (got < (size_t)sz && millis() - t0 < 20000) {
     int av = s->available();
@@ -152,7 +172,6 @@ static bool otaFetchBin(WiFiClientSecure& cl, const char* url, uint8_t* buf, siz
     else if (!s->connected()) break;
     else delay(5);
   }
-  http.end();
   if (got != (size_t)sz) { otaFail("Unduhan berkas verifikasi terputus"); return false; }
   *outLen = got;
   return true;
@@ -172,9 +191,9 @@ static void otaEvaluate(bool setState) {
 }
 
 // ---------------------------------------------------------------- cek rilis terbaru
-static bool otaDoCheck(WiFiClientSecure& cl, bool setState) {
+static bool otaDoCheck(bool setState) {
   String js;
-  if (!otaFetchText(cl, "https://api.github.com/repos/" OTA_GH_OWNER "/" OTA_GH_REPO "/releases/latest", true, js, 200000)) return false;
+  if (!otaFetchText("https://api.github.com/repos/" OTA_GH_OWNER "/" OTA_GH_REPO "/releases/latest", true, js, 200000)) return false;
   char tag[24];
   if (!otaJsonStr(js.c_str(), "tag_name", tag, sizeof(tag)) || !otaTagOk(tag)) { otaFail("Data rilis tidak valid"); return false; }
   uint32_t v = otaParseVer(tag);
@@ -204,10 +223,10 @@ static bool otaVerifySig(const uint8_t dig[32], const uint8_t* sig, size_t sl) {
 
 // ---------------------------------------------------------------- unduh + verifikasi + tulis
 #define OTA_CHUNK 4096
-static void otaDoInstall(WiFiClientSecure& cl) {
+static void otaDoInstall() {
   otaInfo.silent = false; otaInfo.pct = 0; otaInfo.got = 0; otaInfo.total = 0; otaInfo.err[0] = 0;
   // 1) segarkan info rilis (pastikan masih ada & masih lebih baru)
-  if (!otaDoCheck(cl, false)) return;
+  if (!otaDoCheck(false)) return;
   if (!otaInfo.avail) { otaInfo.state = OTA_UPTODATE; otaInfo.changed = true; return; }
   const esp_partition_t* part = esp_ota_get_next_update_partition(NULL);
   if (!part) { otaFail("Partisi OTA tidak ada. Pakai partitions.csv 2 slot"); return; }
@@ -219,20 +238,20 @@ static void otaDoInstall(WiFiClientSecure& cl) {
   // 2) SHA-256 yang diharapkan (+ tanda tangan)
   uint8_t expect[32]; uint8_t tmp[160]; size_t tl = 0;
   { String u = String(base) + OTA_ASSET_SHA;
-    if (!otaFetchBin(cl, u.c_str(), tmp, sizeof(tmp), &tl)) return;
+    if (!otaFetchBin(u.c_str(), tmp, sizeof(tmp), &tl)) return;
     if (!otaParseHex256((const char*)tmp, tl, expect)) { otaFail("Berkas .sha256 tidak valid"); return; } }
 #if OTA_REQUIRE_SIGNATURE
   uint8_t sig[520]; size_t sigLen = 0;
   { String u = String(base) + OTA_ASSET_SIG;
-    if (!otaFetchBin(cl, u.c_str(), sig, sizeof(sig), &sigLen)) return;
+    if (!otaFetchBin(u.c_str(), sig, sizeof(sig), &sigLen)) return;
     if (sigLen < 8) { otaFail("Berkas tanda tangan tidak valid"); return; } }
 #endif
 
   // 3) buka unduhan firmware
-  HTTPClient http;
+  OtaConn dl; HTTPClient& http = dl.http;
   String bu = String(base) + OTA_ASSET_BIN;
-  int code = otaOpen(http, cl, bu.c_str(), false);
-  if (code != 200) { char e[64]; otaHttpErr(code, e, sizeof(e)); http.end(); otaFail(e); return; }
+  int code = otaOpen(dl, bu.c_str(), false);
+  if (code != 200) { char e[96]; otaHttpErr(code, e, sizeof(e)); http.end(); otaFail(e); return; }
   int total = http.getSize();
   if (total < 65536 || (uint32_t)total > part->size) { http.end(); otaFail("Ukuran firmware tidak cocok dengan partisi"); return; }
   otaInfo.total = (uint32_t)total;
@@ -294,12 +313,12 @@ static void otaDoInstall(WiFiClientSecure& cl) {
 
 // ---------------------------------------------------------------- tugas FreeRTOS
 static void otaCheckTask(void*) {
-  { WiFiClientSecure cl; otaTrust(cl); otaDoCheck(cl, true); }
+  otaDoCheck(true);
   otaInfo.changed = true; otaInfo.busy = false;
   vTaskDelete(NULL);
 }
 static void otaInstallTask(void*) {
-  { WiFiClientSecure cl; otaTrust(cl); otaDoInstall(cl); }
+  otaDoInstall();
   otaInfo.changed = true; otaInfo.busy = false;
   vTaskDelete(NULL);
 }
